@@ -54,11 +54,79 @@ async function j(u){const r=await fetch(u); if(!r.ok) throw new Error('HTTP '+r.
 function idMap(a){const m=new Map(); for(const x of a) m.set(x.id,x); return m;}
 function teamShort(B,id){return B.teams.find(t=>t.id===id)?.short_name||'?';}
 function computeBonus(list){const s=[...list].sort((a,b)=>b.bps-a.bps).slice(0,10); if(!s.length) return {}; const g={}; for(const x of s)(g[x.bps]??=[]).push(x.element); const ks=Object.keys(g).map(Number).sort((a,b)=>b-a); const aw={},slots=[3,2,1]; for(let i=0;i<ks.length&&slots.length;i++){const pts=slots.shift(); for(const el of g[ks[i]]) aw[el]=(aw[el]||0)+pts;} return aw;}
-function norm(s){return (s||'').toLowerCase().replace(/[^a-z]/g,'');}
-function cand(el){const L=[]; if(el?.web_name)L.push(el.web_name); if(el?.second_name)L.push(el.second_name); if(el?.first_name&&el?.second_name)L.push(el.first_name+' '+el.second_name); if(el?.first_name&&el?.web_name)L.push(el.first_name+' '+el.web_name); return [...new Set(L)];}
-function match(el,full){const npl=norm(full); if(!npl) return false; for(const c of cand(el)){const nf=norm(c); if(npl.endsWith(nf)||npl.includes(nf)||nf===npl) return true;} return false;}
-function gs(s,k){ if(!s) return 0; const keys={clearances:['clearances'], blocks:['blockedShots','blocks','blocked'], interceptions:['interceptions'], tackles:['tackles'], recoveries:['recoveries','ballRecoveries']}; const arr=keys[k]||[k]; for(const kk of arr){const v=s[kk]; if(v!=null){ if(typeof v==='object'&&'value'in v) return Number(v.value||0); return Number(v||0);} } return 0; }
-async function getPicks(gw){ try{ return await j(`/api/entry/${TEAM_ID}/event/${gw}/picks`);}catch(e){ try{ const h=await j(`/api/entry/${TEAM_ID}/history`); const last=(h?.current||[]).reverse().find(x=>x.finished)|| (h?.current||[])[0]; if(last) return await j(`/api/entry/${TEAM_ID}/event/${last.event}/picks`);}catch(_){ } } return null; }
+
+// ===== اسم اللاعب: إزالة اللكنات + بدائل =====
+function stripDiacritics(s){return (s||'').normalize('NFD').replace(/\p{Diacritic}/gu,'');}
+function norm(s){return stripDiacritics(s).toLowerCase().replace(/[^a-z ]/g,'').replace(/\s+/g,' ').trim();}
+function cand(el){
+  const L=new Set();
+  const fn=el?.first_name||'', ln=el?.second_name||'', wn=el?.web_name||'';
+  if(wn) L.add(wn);
+  if(ln) L.add(ln);
+  if(fn&&ln) L.add(fn+' '+ln), L.add(fn[0]+'. '+ln), L.add(fn[0]+ln); // M. Salah, M Salah
+  if(fn&&wn) L.add(fn+' '+wn), L.add(fn[0]+'. '+wn), L.add(fn[0]+wn);
+  // أشكال بدون مسافة
+  if(ln) L.add(ln.replace(/\s+/g,''));
+  if(wn) L.add(wn.replace(/\s+/g,''));
+  return [...L];
+}
+function match(el,full){
+  const npl=norm(full);
+  if(!npl) return false;
+  for(const c of cand(el)){
+    const nf=norm(c);
+    if(!nf) continue;
+    if(npl===nf || npl.endsWith(' '+nf) || npl.includes(' '+nf+' ') || npl===nf.replace(/\s+/g,'')) return true;
+  }
+  return false;
+}
+
+// قراءة قيمة رقمية من كائنات PL (قد تأتي value داخل كائن)
+function gs(s,k){
+  if(!s) return 0;
+  const keys={
+    clearances:['clearances'],
+    blocks:['blockedShots','blocks','blocked'],
+    interceptions:['interceptions'],
+    tackles:['tackles'],
+    recoveries:['recoveries','ballRecoveries']
+  }[k] || [k];
+  for(const kk of keys){
+    const v=s[kk];
+    if(v!=null){ if(typeof v==='object' && 'value' in v) return Number(v.value||0); return Number(v||0); }
+  }
+  return 0;
+}
+
+// نجمع اللاعبين من كل مسارات PL المحتملة
+function collectPLPlayers(pl){
+  const out=[];
+  const push=(arr)=>{for(const p of (arr||[])){const name=p.name||p.player?.name||p.playerName||p.info?.name||''; const s=p.stats||p.s||p.totals||p.playerStats||{}; out.push({name,s});}};
+  if(pl?.entity){ push(pl.entity?.home?.players); push(pl.entity?.away?.players); }
+  if(pl?.players) push(pl.players);
+  if(pl?.homeTeam?.players) push(pl.homeTeam.players);
+  if(pl?.awayTeam?.players) push(pl.awayTeam.players);
+  if(pl?.boxScore?.homeTeam?.players) push(pl.boxScore.homeTeam.players);
+  if(pl?.boxScore?.awayTeam?.players) push(pl.boxScore.awayTeam.players);
+  if(pl?.stats?.players) push(pl.stats.players);
+  if(pl?.matchCentreData?.home?.players) push(pl.matchCentreData.home.players);
+  if(pl?.matchCentreData?.away?.players) push(pl.matchCentreData.away.players);
+  return out;
+}
+
+async function getPicks(gw){
+  try{ return await j(`/api/entry/${TEAM_ID}/event/${gw}/picks`); }
+  catch(e){
+    try{
+      const h=await j(`/api/entry/${TEAM_ID}/history`);
+      const last=(h?.current||[]).reverse().find(x=>x.finished)||(h?.current||[])[0];
+      if(last) return await j(`/api/entry/${TEAM_ID}/event/${last.event}/picks`);
+    }catch(_){}
+  }
+  return null;
+}
+
+const plCache=new Map();
 
 async function render(){
   $status.textContent='جارِ التحديث…';
@@ -72,48 +140,59 @@ async function render(){
     const [fixtures, live, picks] = await Promise.all([ j(`/api/fixtures?event=${gw}`), j(`/api/live/${gw}`), getPicks(gw) ]);
     $legend.innerHTML=`Team: <b>${TEAM_ID}</b> — GW: <b>${gw}</b>`;
 
-    const bpsByFx={}; if(Array.isArray(live.elements)){ for(const el of live.elements){ const id=el.id, bps=el.stats?.bps??0, fx=el.explain?.[0]?.fixture||null; if(!fx) continue; (bpsByFx[fx] ||= []).push({element:id,bps}); }}
+    // BPS حسب المباراة
+    const bpsByFx={};
+    if(Array.isArray(live.elements)){
+      for(const el of live.elements){
+        const id=el.id, bps=el.stats?.bps??0, fx=el.explain?.[0]?.fixture||null;
+        if(!fx) continue; (bpsByFx[fx] ||= []).push({element:id,bps});
+      }
+    }
 
     $fixtures.innerHTML=''; const fr=document.createDocumentFragment();
+
     for(const f of fixtures){
       const fxId=f.id, pulse=f.pulse_id, home=teamShort(BOOT,f.team_h), away=teamShort(BOOT,f.team_a);
       const ko=f.kickoff_time ? new Date(f.kickoff_time).toLocaleString() : '—';
       const bpsList=(bpsByFx[fxId]||[]).sort((a,b)=>b.bps-a.bps).slice(0,12);
       const bonus=computeBonus(bpsList);
 
+      // جلب PL مرة واحدة لكل pulse_id
       let plPlayers=[];
       if(pulse){
         try{
-          const pl=await j(`/api/pl/match/${pulse}`);
-          const push=a=>{ for(const p of (a||[])){ const name=p.name||p.player?.name||p.playerName||''; const s=p.stats||p.s||{}; plPlayers.push({name,s}); } };
-          if(pl?.entity){ push(pl.entity?.home?.players); push(pl.entity?.away?.players); }
-          if(pl?.players) push(pl.players);
-          if(pl?.homeTeam?.players) push(pl.homeTeam.players);
-          if(pl?.awayTeam?.players) push(pl.awayTeam.players);
-          if(pl?.stats?.players) push(pl.stats.players);
+          let pl = plCache.get(pulse);
+          if(!pl){ pl = await j(`/api/pl/match/${pulse}`); plCache.set(pulse, pl); }
+          plPlayers = collectPLPlayers(pl);
         }catch(e){ console.warn('PL fail', pulse, e); }
       }
       const plMap=new Map(plPlayers.map(p=>[p.name,p.s]));
 
-      const thead=`<thead><tr><th>DefCon</th><th>Bonus</th><th>BPS</th><th>اللاعب</th></tr></thead>`;
+      const thead=`<thead><tr><th>اللاعب</th><th>BPS</th><th>Bonus</th><th>DefCon</th></tr></thead>`;
       const rows=bpsList.map(row=>{
         const el=E.get(row.element); const pos=el?.element_type; const name=el?.web_name || ('#'+row.element);
+
+        // طابق الاسم مع أسماء PL بعد التطبيع
         let s=null; for(const [plName,stats] of plMap.entries()){ if(match(el, plName)){ s=stats; break; } }
-        const def = (()=>{
-          if(!s) return null;
+
+        // احسب DefCon حسب المركز
+        let def=null;
+        if(s){
           const C=gs(s,'clearances'), B=gs(s,'blocks'), I=gs(s,'interceptions'), T=gs(s,'tackles'), R=gs(s,'recoveries');
-          return (pos===1||pos===2)? (C+B+I+T) : (C+B+I+T+R);
-        })();
+          def = (pos===1||pos===2) ? (C+B+I+T) : (C+B+I+T+R);
+        }
+
         const high = def!=null && ((pos===1||pos===2)? def>=10 : def>=12);
         const mine = picks?.picks?.some(px=>px.element===row.element);
         const isC  = picks?.picks?.some(px=>px.element===row.element && (px.is_captain||px.multiplier===2));
         const isVC = picks?.picks?.some(px=>px.element===row.element && px.is_vice_captain);
         const tags=[]; if(mine) tags.push('<span class="tag">فريقي</span>'); if(isC) tags.push('<span class="tag cap">C</span>'); if(isVC) tags.push('<span class="tag vc">VC</span>');
+
         return `<tr>
-          <td class="${high?'green':''}">${def!=null?def:'–'}</td>
-          <td class="bonus">${bonus[row.element]||0}</td>
-          <td>${row.bps}</td>
           <td style="text-align:right">${name} ${tags.join(' ')}</td>
+          <td>${row.bps}</td>
+          <td class="bonus">${bonus[row.element]||0}</td>
+          <td class="${high?'green':''}">${def!=null?def:'-'}</td>
         </tr>`;
       }).join('');
 
@@ -126,6 +205,7 @@ async function render(){
         <table>${thead}<tbody>${rows}</tbody></table>`;
       fr.appendChild(card);
     }
+
     $fixtures.appendChild(fr);
     $status.textContent='آخر تحديث: '+new Date().toLocaleTimeString();
   }catch(err){ console.error(err); $status.textContent='تعذر الجلب — حاول مجددًا'; }
