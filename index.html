@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>FPL CAFE — DefCon Table</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0e14;--card:#111525;--border:#1e2537;--ink:#f1f5ff;--muted:#9fb0c6;--accent:#2fff88;--hi:#2fff88;}
+*{box-sizing:border-box} body{font-family:'Tajawal',system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--ink);margin:0}
+header{position:sticky;top:0;background:linear-gradient(180deg,rgba(11,14,20,.97),rgba(11,14,20,.80));backdrop-filter:blur(6px);border-bottom:1px solid var(--border);padding:14px 16px;z-index:5}
+.wrap{max-width:1220px;margin:0 auto} h1{margin:0;font-size:30px;color:var(--accent);font-weight:900} .subtitle{font-size:13px;color:var(--muted)}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
+input,button{padding:9px 12px;border:1px solid var(--border);background:#141a2b;color:var(--ink);border-radius:10px;font-size:14px}
+button{cursor:pointer} .status{font-size:13px;color:var(--muted)} main{padding:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px}
+.fixture-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px} .teams{font-weight:800;font-size:16px}
+.pill{font-size:12px;padding:2px 10px;border-radius:999px;border:1px solid var(--border)} .pill.live{border-color:var(--accent)}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+thead th{position:sticky;top:0;background:var(--card);z-index:1;font-size:13.5px;color:#dfe6f3;border-bottom:1px solid #263049;padding:7px 6px}
+tbody td{padding:8px 6px;border-bottom:1px dashed #263049;font-size:14px;vertical-align:middle;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td:first-child,th:first-child{text-align:right} .bonus{font-weight:800} .muted{color:var(--muted)}
+.tag{font-size:11px;border:1px solid #2a3247;border-radius:999px;padding:1px 6px;margin-left:4px} .cap{border-color:#ffd54f;color:#ffd54f} .vc{border-color:#81d4fa;color:#81d4fa}
+.green{color:var(--hi);font-weight:800}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>FPL CAFE</h1>
+    <div class="subtitle">by: gaiore</div>
+    <div class="controls">
+      <label>الجولة: <input id="gw" type="number" min="1" max="38" value="1"></label>
+      <label>Team ID: <input id="teamId" type="number" min="1" value="159748" style="width:130px"></label>
+      <button id="applyTeam">تطبيق الفريق</button>
+      <button id="refresh">تحديث الآن</button>
+      <span id="status" class="status"></span>
+    </div>
+  </div>
+</header>
+<main class="wrap">
+  <div id="legend" class="muted" style="margin-bottom:8px"></div>
+  <div id="fixtures" class="grid"></div>
+</main>
+<script>
+let TEAM_ID = Number(localStorage.getItem('TEAM_ID')||159748);
+const $gw=document.getElementById('gw'), $fixtures=document.getElementById('fixtures'), $status=document.getElementById('status'), $legend=document.getElementById('legend'), $teamId=document.getElementById('teamId');
+document.getElementById('applyTeam').onclick=()=>{TEAM_ID=Number($teamId.value||TEAM_ID);localStorage.setItem('TEAM_ID',TEAM_ID);render();};
+document.getElementById('refresh').onclick=()=>render();
+
+let BOOT; const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function j(u){const r=await fetch(u); if(!r.ok) throw new Error('HTTP '+r.status); return r.json();}
+function idMap(a){const m=new Map(); for(const x of a) m.set(x.id,x); return m;}
+function teamShort(B,id){return B.teams.find(t=>t.id===id)?.short_name||'?';}
+function computeBonus(list){const s=[...list].sort((a,b)=>b.bps-a.bps).slice(0,10); if(!s.length) return {}; const g={}; for(const x of s)(g[x.bps]??=[]).push(x.element); const ks=Object.keys(g).map(Number).sort((a,b)=>b-a); const aw={},slots=[3,2,1]; for(let i=0;i<ks.length&&slots.length;i++){const pts=slots.shift(); for(const el of g[ks[i]]) aw[el]=(aw[el]||0)+pts;} return aw;}
+function norm(s){return (s||'').toLowerCase().replace(/[^a-z]/g,'');}
+function cand(el){const L=[]; if(el?.web_name)L.push(el.web_name); if(el?.second_name)L.push(el.second_name); if(el?.first_name&&el?.second_name)L.push(el.first_name+' '+el.second_name); if(el?.first_name&&el?.web_name)L.push(el.first_name+' '+el.web_name); return [...new Set(L)];}
+function match(el,full){const npl=norm(full); if(!npl) return false; for(const c of cand(el)){const nf=norm(c); if(npl.endsWith(nf)||npl.includes(nf)||nf===npl) return true;} return false;}
+function gs(s,k){ if(!s) return 0; const keys={clearances:['clearances'], blocks:['blockedShots','blocks','blocked'], interceptions:['interceptions'], tackles:['tackles'], recoveries:['recoveries','ballRecoveries']}; const arr=keys[k]||[k]; for(const kk of arr){const v=s[kk]; if(v!=null){ if(typeof v==='object'&&'value'in v) return Number(v.value||0); return Number(v||0);} } return 0; }
+async function getPicks(gw){ try{ return await j(`/api/entry/${TEAM_ID}/event/${gw}/picks`);}catch(e){ try{ const h=await j(`/api/entry/${TEAM_ID}/history`); const last=(h?.current||[]).reverse().find(x=>x.finished)|| (h?.current||[])[0]; if(last) return await j(`/api/entry/${TEAM_ID}/event/${last.event}/picks`);}catch(_){ } } return null; }
+
+async function render(){
+  $status.textContent='جارِ التحديث…';
+  try{
+    if(!BOOT){ BOOT=await j('/api/bootstrap'); }
+    const E=idMap(BOOT.elements);
+    const cur=BOOT.events.find(e=>e.is_current)?.id || BOOT.events.find(e=>!e.finished)?.id || 1;
+    if(!$gw.dataset.init){ $gw.value=cur; $gw.dataset.init='1'; }
+    const gw=Number($gw.value);
+
+    const [fixtures, live, picks] = await Promise.all([ j(`/api/fixtures?event=${gw}`), j(`/api/live/${gw}`), getPicks(gw) ]);
+    $legend.innerHTML=`Team: <b>${TEAM_ID}</b> — GW: <b>${gw}</b>`;
+
+    const bpsByFx={}; if(Array.isArray(live.elements)){ for(const el of live.elements){ const id=el.id, bps=el.stats?.bps??0, fx=el.explain?.[0]?.fixture||null; if(!fx) continue; (bpsByFx[fx] ||= []).push({element:id,bps}); }}
+
+    $fixtures.innerHTML=''; const fr=document.createDocumentFragment();
+    for(const f of fixtures){
+      const fxId=f.id, pulse=f.pulse_id, home=teamShort(BOOT,f.team_h), away=teamShort(BOOT,f.team_a);
+      const ko=f.kickoff_time ? new Date(f.kickoff_time).toLocaleString() : '—';
+      const bpsList=(bpsByFx[fxId]||[]).sort((a,b)=>b.bps-a.bps).slice(0,12);
+      const bonus=computeBonus(bpsList);
+
+      let plPlayers=[];
+      if(pulse){
+        try{
+          const pl=await j(`/api/pl/match/${pulse}`);
+          const push=a=>{ for(const p of (a||[])){ const name=p.name||p.player?.name||p.playerName||''; const s=p.stats||p.s||{}; plPlayers.push({name,s}); } };
+          if(pl?.entity){ push(pl.entity?.home?.players); push(pl.entity?.away?.players); }
+          if(pl?.players) push(pl.players);
+          if(pl?.homeTeam?.players) push(pl.homeTeam.players);
+          if(pl?.awayTeam?.players) push(pl.awayTeam.players);
+          if(pl?.stats?.players) push(pl.stats.players);
+        }catch(e){ console.warn('PL fail', pulse, e); }
+      }
+      const plMap=new Map(plPlayers.map(p=>[p.name,p.s]));
+
+      const thead=`<thead><tr><th>DefCon</th><th>Bonus</th><th>BPS</th><th>اللاعب</th></tr></thead>`;
+      const rows=bpsList.map(row=>{
+        const el=E.get(row.element); const pos=el?.element_type; const name=el?.web_name || ('#'+row.element);
+        let s=null; for(const [plName,stats] of plMap.entries()){ if(match(el, plName)){ s=stats; break; } }
+        const def = (()=>{
+          if(!s) return null;
+          const C=gs(s,'clearances'), B=gs(s,'blocks'), I=gs(s,'interceptions'), T=gs(s,'tackles'), R=gs(s,'recoveries');
+          return (pos===1||pos===2)? (C+B+I+T) : (C+B+I+T+R);
+        })();
+        const high = def!=null && ((pos===1||pos===2)? def>=10 : def>=12);
+        const mine = picks?.picks?.some(px=>px.element===row.element);
+        const isC  = picks?.picks?.some(px=>px.element===row.element && (px.is_captain||px.multiplier===2));
+        const isVC = picks?.picks?.some(px=>px.element===row.element && px.is_vice_captain);
+        const tags=[]; if(mine) tags.push('<span class="tag">فريقي</span>'); if(isC) tags.push('<span class="tag cap">C</span>'); if(isVC) tags.push('<span class="tag vc">VC</span>');
+        return `<tr>
+          <td class="${high?'green':''}">${def!=null?def:'–'}</td>
+          <td class="bonus">${bonus[row.element]||0}</td>
+          <td>${row.bps}</td>
+          <td style="text-align:right">${name} ${tags.join(' ')}</td>
+        </tr>`;
+      }).join('');
+
+      const card=document.createElement('div'); card.className='card';
+      card.innerHTML=`
+        <div class="fixture-head">
+          <div><div class="teams">${home} vs ${away}</div><div class="muted" style="font-size:12px">${ko}</div></div>
+          <div class="pill ${f.started?'live':''}">${f.started?'LIVE':'Scheduled'}</div>
+        </div>
+        <table>${thead}<tbody>${rows}</tbody></table>`;
+      fr.appendChild(card);
+    }
+    $fixtures.appendChild(fr);
+    $status.textContent='آخر تحديث: '+new Date().toLocaleTimeString();
+  }catch(err){ console.error(err); $status.textContent='تعذر الجلب — حاول مجددًا'; }
+}
+render(); (async function loop(){ while(true){ await sleep(30000); await render(); } })();
+</script>
+</body>
+</html>
